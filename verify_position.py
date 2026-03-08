@@ -11,11 +11,11 @@ MM_PER_PIXEL = 0.4  # Adjust based on your setup
 model = YOLO("yolov8n.pt")
 
 def get_reference_data():
-    """Finds the latest image in init_state and returns the detection box and center."""
+    """Finds the latest image in init_state and returns the detection box, center, and class name."""
     list_of_files = glob.glob(os.path.join(FOLDER_NAME, "*.jpg"))
     if not list_of_files:
         print(f"Error: No images found in '{FOLDER_NAME}' folder.")
-        return None, None
+        return None, None, None
     
     latest_file = max(list_of_files, key=os.path.getctime)
     print(f"Using reference image: {latest_file}")
@@ -26,16 +26,18 @@ def get_reference_data():
     if len(results[0].boxes) > 0:
         # Get the first detected object as the reference
         box = results[0].boxes.xyxy[0].cpu().numpy()
+        cls_id = int(results[0].boxes.cls[0])
+        cls_name = model.names[cls_id]
         x1, y1, x2, y2 = box
         cx = (x1 + x2) / 2
         cy = (y1 + y2) / 2
-        return box, (cx, cy)
+        return box, (cx, cy), cls_name
     
     print("Error: No objects detected in the reference image.")
-    return None, None
+    return None, None, None
 
 # 2. Get reference position
-ref_box, ref_center = get_reference_data()
+ref_box, ref_center, ref_class = get_reference_data()
 
 if ref_box is None:
     exit()
@@ -44,7 +46,7 @@ ref_x1, ref_y1, ref_x2, ref_y2 = ref_box
 ref_cx, ref_cy = ref_center
 
 # 3. Initialize Camera
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
 
 print("Starting live verification...")
 print("The green box is the PRESET position.")
@@ -57,7 +59,7 @@ while True:
 
     # Draw the PRESET position (Green Box)
     cv2.rectangle(frame, (int(ref_x1), int(ref_y1)), (int(ref_x2), int(ref_y2)), (0, 255, 0), 2)
-    cv2.putText(frame, "Preset Position", (int(ref_x1), int(ref_y1) - 10), 
+    cv2.putText(frame, f"Preset: {ref_class}", (int(ref_x1), int(ref_y1) - 10), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
     # Run detection on live frame
@@ -65,13 +67,26 @@ while True:
 
     if len(results[0].boxes) > 0:
         # Find the object in the live frame (using the first one detected)
-        live_box = results[0].boxes.xyxy[0].cpu().numpy()
+        box_data = results[0].boxes[0]
+        live_box = box_data.xyxy[0].cpu().numpy()
+        live_cls_id = int(box_data.cls[0])
+        live_class = model.names[live_cls_id]
+
         lx1, ly1, lx2, ly2 = live_box
         lcx = (lx1 + lx2) / 2
         lcy = (ly1 + ly2) / 2
 
         # Draw the CURRENT position (Red Box)
         cv2.rectangle(frame, (int(lx1), int(ly1)), (int(lx2), int(ly2)), (0, 0, 255), 2)
+
+        # Class match check
+        class_match = live_class == ref_class
+        class_text = f"Ref: {ref_class}, Live: {live_class} "
+        class_text += "(MATCH)" if class_match else "(MISMATCH)"
+        class_color = (0, 255, 0) if class_match else (0, 0, 255)
+
+        cv2.putText(frame, class_text, (20, 70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, class_color, 2)
 
         # Calculate difference
         dx_pixel = lcx - ref_cx
@@ -84,9 +99,12 @@ while True:
         status_text = f"Move X: {dx_mm:+.2f}mm, Y: {dy_mm:+.2f}mm"
         color = (0, 255, 255) # Yellow
         
-        if abs(dx_mm) < 2 and abs(dy_mm) < 2:
-            status_text = "MATCHED: In correct position"
+        if abs(dx_mm) < 2 and abs(dy_mm) < 2 and class_match:
+            status_text = "MATCHED: In correct position & class"
             color = (0, 255, 0) # Green
+        elif abs(dx_mm) < 2 and abs(dy_mm) < 2:
+            status_text = "Position Match, Class Mismatch"
+            color = (0, 0, 255) # Red
 
         cv2.putText(frame, status_text, (20, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
